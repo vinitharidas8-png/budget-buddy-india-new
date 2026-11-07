@@ -14,7 +14,7 @@ export interface StoreData {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __BUDGET_STORE__: StoreData | undefined;
 }
 

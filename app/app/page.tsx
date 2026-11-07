@@ -591,7 +591,8 @@ export default function Home() {
         setProfile((p) => p ? { ...p, ...data.profile } : p);
       }
 
-      // Reload budget after chat
+      // Reload profile balance & budget after chat to instantly reflect any income credited or expense changes
+      fetch(`${API}/api/profile/${userId}`).then((r) => r.json()).then(setProfile).catch(() => {});
       fetch(`${API}/api/budget/${userId}`).then((r) => r.json()).then(setBudget).catch(() => {});
     } catch {
       setMessages((prev) => [
@@ -649,13 +650,14 @@ export default function Home() {
 
   // ── Quick chips ───────────────────────────────────────────────────────────
   const chips = [
+    { label: "Received ₹5,000", text: "Received ₹5,000 from freelance client" },
     { label: "Log ₹150 lunch", text: "I spent ₹150 on lunch" },
     { label: "Can I afford ₹1,000?", text: "Can I afford ₹1,000?" },
     { label: "Daily safe limit", text: "How much can I spend today?" },
     { label: "Weekend cap", text: "What is my safe weekend budget?" },
     { label: "50/30/20 audit", text: "Analyze my budget with 50/30/20 rule" },
-    { label: "Simulate +₹500 save", text: "What if I save ₹500 more?" },
-    { label: "⚡ Test Bank SMS", text: "Sent Rs.320 from HDFC Bank A/c 1234 to SWIGGY on 16-OCT-26 UPI:42901" },
+    { label: "Credit SMS Test", text: "Your a/c 1234 is credited with Rs 15000.00 on 30Oct26 by transfer from CLIENT" },
+    { label: "Debit SMS Test", text: "Sent Rs.320 from HDFC Bank A/c 1234 to SWIGGY on 16-OCT-26 UPI:42901" },
     { label: "Emergency mode", text: "Financial emergency, help me survive" },
     { label: "Savings tips", text: "Give me smart savings tips for Food" },
   ];

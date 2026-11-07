@@ -131,7 +131,7 @@ export function processRuleBasedAI(parsed: ParsedInput, userId: string, rawMessa
       const dailyAllowance = Math.max(1, Math.round(res.safe_to_spend / Math.max(1, bal.days_remaining)));
       const daysEquivalent = Math.round((parsed.amount / dailyAllowance) * 10) / 10;
 
-      let badgeClass = "band";
+      const badgeClass = "band";
       let advice = "";
 
       if (res.verdict === "Safe") {

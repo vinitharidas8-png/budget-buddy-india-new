@@ -115,12 +115,13 @@ export function extractAmount(text: string): number {
  * e.g. "Sent Rs.450.00 from HDFC Bank A/c 1234 to ZOMATO on 16-10-26 UPI:42901"
  * e.g. "Dear SBI User, your A/c has been debited by Rs 120.00 on 16Oct26 by transfer to AUTO"
  */
-export function parseBankSms(text: string): { isSms: boolean; amount: number; merchant: string; category: string; bank: string } {
+export function parseBankSms(text: string): { isSms: boolean; type: "expense" | "income"; amount: number; merchant: string; category: string; bank: string } {
+  const isCredit = /credited|received|deposit|deposited|refund|cashback|added|cr\b/i.test(text);
   const isDebit = /debited|spent|sent|paid|transferred|withdrawn|dr\b/i.test(text);
-  const isBank = /bank|a\/c|acct|upi|imps|neft|vpa|ref\s*no/i.test(text);
+  const isBank = /bank|account|a\/c|acct|upi|imps|neft|rtgs|vpa|ref\s*no|wallet/i.test(text);
 
-  if (!isDebit || !isBank) {
-    return { isSms: false, amount: 0, merchant: "", category: "Other", bank: "" };
+  if ((!isDebit && !isCredit) || !isBank) {
+    return { isSms: false, type: "expense", amount: 0, merchant: "", category: "Other", bank: "" };
   }
 
   // Detect bank
@@ -133,8 +134,17 @@ export function parseBankSms(text: string): { isSms: boolean; amount: number; me
   else if (/paytm/i.test(text)) bank = "Paytm Bank";
 
   // Extract amount
-  const amtMatch = text.match(/(?:rs\.?|inr|debited by|spent)\s*[:.]?\s*(\d+(?:,\d+)*(?:\.\d+)?)/i);
+  const amtMatch = text.match(/(?:rs\.?|inr|debited by|credited with|credited by|spent|received)\s*[:.]?\s*(\d+(?:,\d+)*(?:\.\d+)?)/i);
   const amount = amtMatch ? parseFloat(amtMatch[1].replace(/,/g, "")) : extractAmount(text);
+
+  if (isCredit) {
+    let sender = "Deposit";
+    const fromMatch = text.match(/(?:from|by|vpa|info\/)\s+([a-zA-Z0-9_\-\s]{2,25})(?:\s+on|\s+ref|\s+upi|\s+a\/c|\.|$)/i);
+    if (fromMatch && fromMatch[1]) {
+      sender = fromMatch[1].trim();
+    }
+    return { isSms: true, type: "income", amount, merchant: sender, category: "Income", bank };
+  }
 
   // Extract merchant/recipient: e.g. "to SWIGGY", "to VPA swiggy@icici", "at STARBUCKS"
   let merchant = "Payment";
@@ -145,7 +155,7 @@ export function parseBankSms(text: string): { isSms: boolean; amount: number; me
 
   const category = resolveCategory(merchant + " " + text);
 
-  return { isSms: true, amount, merchant, category, bank };
+  return { isSms: true, type: "expense", amount, merchant, category, bank };
 }
 
 /**
@@ -174,6 +184,17 @@ export function parseFinancialInput(message: string): ParsedInput {
   // 1. Bank SMS check
   const sms = parseBankSms(trimmed);
   if (sms.isSms && sms.amount > 0) {
+    if (sms.type === "income") {
+      return {
+        intent: "LOG_INCOME",
+        amount: sms.amount,
+        description: sms.merchant || "Bank Credit / Deposit",
+        category: "Income",
+        isBankSms: true,
+        smsBank: sms.bank,
+        smsMerchant: sms.merchant,
+      };
+    }
     return {
       intent: "LOG_EXPENSE",
       amount: sms.amount,
@@ -221,8 +242,10 @@ export function parseFinancialInput(message: string): ParsedInput {
     return { intent: "SAVINGS_TIPS", amount: 0, description: "", category: resolveCategory(lower), isBankSms: false };
   }
 
-  // 9. Affordability Check
-  if (/(can i afford|should i buy|can i buy|can i spend|is it safe to buy)/.test(lower)) {
+  // 9. Immediate Affordability Check (e.g. "Can I afford 1500 headphones today?")
+  // Exclude future goals / savings planning (e.g., "in 6 months", "next year", "how can i afford")
+  const isFuturePlanning = /in\s+\d+\s*(months?|years?|weeks?)|next\s*(month|year)|plan|strategy|how can i afford|how to afford/i.test(lower);
+  if (!isFuturePlanning && /(can i afford|should i buy|can i buy|can i spend|is it safe to buy)/.test(lower)) {
     const amount = extractAmount(lower);
     const desc = lower
       .replace(/can i afford|should i buy|can i buy|can i spend|is it safe to buy|for|₹|rs\.?/gi, "")
@@ -242,22 +265,43 @@ export function parseFinancialInput(message: string): ParsedInput {
     return { intent: "GOALS_QUERY", amount: 0, description: "", category: "", isBankSms: false };
   }
 
-  // 12. Income Logging
-  if (/received|got salary|credited|got paid|freelance|pocket money|stipend|cashback/.test(lower)) {
+  // 12. Income Logging (only when explicit action verb or credit indicator is present, not general questions)
+  const isQuestion = /^(can|could|how|what|why|suggest|give|tell|explain|plan)\b/i.test(trimmed) || trimmed.includes("?");
+  if (!isQuestion && /received|got salary|salary credited|credited|deposit|deposited|refund|cashback|earned|got paid|freelance|pocket money|stipend|bonus|added money/.test(lower) && !/spent|paid to|debited/.test(lower)) {
     const amount = extractAmount(lower);
-    let desc = trimmed.replace(/^(i\s+)?(received|got|credited|earned)\s*/i, "").slice(0, 40);
-    if (!desc) desc = "Income";
-    return { intent: "LOG_INCOME", amount, description: desc, category: "Income", isBankSms: false };
+    if (amount > 0) {
+      let desc = trimmed
+        .replace(/^(i\s+)?(received|got|credited|earned|deposited)\s*/i, "")
+        .replace(/(?:rs\.?|inr|₹)\s*[\d,kL]*/gi, "")
+        .replace(/\b[\d,]+\b/g, "")
+        .replace(/\s*(salary|bonus|freelance|stipend|cashback|refund)\s*/i, "$1 ")
+        .trim();
+      if (!desc) {
+        if (/salary/i.test(lower)) desc = "Monthly Salary";
+        else if (/freelance/i.test(lower)) desc = "Freelance Income";
+        else if (/refund/i.test(lower)) desc = "Refund";
+        else if (/cashback/i.test(lower)) desc = "Cashback";
+        else if (/stipend/i.test(lower)) desc = "Stipend";
+        else if (/bonus/i.test(lower)) desc = "Bonus";
+        else desc = "Income";
+      }
+      return { intent: "LOG_INCOME", amount, description: desc.slice(0, 40), category: "Income", isBankSms: false };
+    }
   }
 
-  // 13. Budget Status
-  if (/budget|status|how am i doing|left to spend|overview/.test(lower)) {
+  // 13. Budget Status (only when specifically asking for current budget status/progress, not asking to create/suggest a plan)
+  if (!isQuestion && /^(budget|status|how am i doing|left to spend|overview)$/i.test(trimmed)) {
     return { intent: "BUDGET_HEALTH", amount: 0, description: "", category: "", isBankSms: false };
   }
 
-  // 14. Expense Logging (Default action when spent/paid keywords, currency symbols, or bare numbers/items are provided)
+  // 14. Expense Logging: only trigger if explicit spending words or currency indicators are present,
+  // or short transaction inputs (e.g. "biryani 150", "spent 200 on chai", "₹500 petrol")
+  const hasCurrencySign = /(?:₹|rs\.?|inr|rupees|bucks)\b/i.test(trimmed) || /₹/.test(trimmed);
+  const hasSpendVerb = /\b(spent|paid|bought|spend|ordered|recharge|debited)\b/i.test(lower);
   const amount = extractAmount(lower);
-  if (amount > 0) {
+
+  // If there's an amount, only classify as LOG_EXPENSE if explicitly spending or currency given, or message is short
+  if (amount > 0 && (hasSpendVerb || hasCurrencySign || trimmed.split(/\s+/).length <= 4)) {
     let cleanDesc = trimmed
       .replace(/^(i\s+)?(spent|paid|bought|spend|had|ordered|recharge)\s*(?:rs\.?|inr|₹)?\s*[\d,kL]*\s*(?:on|for)?\s*/i, "")
       .replace(/(?:rs\.?|inr|₹)\s*[\d,kL]*/gi, "")
