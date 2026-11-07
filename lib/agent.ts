@@ -320,12 +320,39 @@ async function chatWithGroq(message: string, history: any[], userId: string, api
           profile.quest_count = Math.min(profile.quest_count + 1, 3);
           if (checkLevelUp(profile)) levelUp = true;
         }
+
+        // Push tool call and response into conversation so the model can generate a full explanation
+        messages.push(choice.message);
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          name,
+          content: JSON.stringify(res),
+        });
       }
     }
 
-    const reply = choice?.message?.content || (pending
-      ? `Got it! I prepared the entry for <b>₹${pending.amount.toLocaleString("en-IN")}</b> (${pending.description}). Please confirm below:`
-      : `Processed your request.`);
+    let reply = choice?.message?.content;
+
+    // If model didn't return text (only tool calls), perform follow-up turn to get full advisory explanation
+    if (!reply && !pending) {
+      try {
+        const followUp = await groq.chat.completions.create({
+          model: "openai/gpt-oss-120b",
+          messages,
+          temperature: 0.3,
+        });
+        reply = followUp.choices?.[0]?.message?.content;
+      } catch (e) {
+        console.warn("Follow-up completion failed:", e);
+      }
+    }
+
+    if (!reply) {
+      reply = pending
+        ? `Got it! I prepared the entry for <b>₹${pending.amount.toLocaleString("en-IN")}</b> (${pending.description}). Please confirm below:`
+        : `Processed your request.`;
+    }
 
     return {
       reply,
