@@ -233,7 +233,7 @@ export function parseFinancialInput(message: string): ParsedInput {
   }
 
   // 7. 50/30/20 Financial Health Audit
-  if (/50[\s/-]?30[\s/-]?20|audit|financial checkup|budget review|how healthy is my budget|breakdown/.test(lower)) {
+  if (/50[\s/-]?30[\s/-]?20|audit|financial checkup|budget review|budget health|analyze my budget|how healthy is my budget|breakdown/.test(lower)) {
     return { intent: "FINANCIAL_AUDIT_50_30_20", amount: 0, description: "", category: "", isBankSms: false };
   }
 
@@ -267,6 +267,19 @@ export function parseFinancialInput(message: string): ParsedInput {
 
   // 12. Income Logging (only when explicit action verb or credit indicator is present, not general questions)
   const isQuestion = /^(can|could|how|what|why|suggest|give|tell|explain|plan)\b/i.test(trimmed) || trimmed.includes("?");
+
+  // 12a. Balance / income declaration: "my balance is 50k", "current balance is 50k", "i have 30000"
+  if (!isQuestion && /\b(balance|have|holding|saved|left)\b/i.test(lower) && /\b(is|have|got)\b/i.test(lower)) {
+    const amount = extractAmount(lower);
+    if (amount > 0) {
+      let desc = "Balance update";
+      if (/salary/i.test(lower)) desc = "Monthly Salary";
+      else if (/saving/i.test(lower)) desc = "Savings";
+      else if (/balance/i.test(lower)) desc = "Balance update";
+      return { intent: "LOG_INCOME", amount, description: desc, category: "Income", isBankSms: false };
+    }
+  }
+
   if (!isQuestion && /received|got salary|salary credited|credited|deposit|deposited|refund|cashback|earned|got paid|freelance|pocket money|stipend|bonus|added money/.test(lower) && !/spent|paid to|debited/.test(lower)) {
     const amount = extractAmount(lower);
     if (amount > 0) {
@@ -300,8 +313,13 @@ export function parseFinancialInput(message: string): ParsedInput {
   const hasSpendVerb = /\b(spent|paid|bought|spend|ordered|recharge|debited)\b/i.test(lower);
   const amount = extractAmount(lower);
 
+  // Exclude balance statements, income declarations, and informational phrases from being treated as expenses
+  const isBalanceOrInfoStatement = /\b(balance|have|holding|saved|saving|current|account|my\s+(?:income|salary))\b/i.test(lower)
+    && /\b(is|have|has|got|left|remaining)\b/i.test(lower);
+
   // If there's an amount, only classify as LOG_EXPENSE if explicitly spending or currency given, or message is short
-  if (amount > 0 && (hasSpendVerb || hasCurrencySign || trimmed.split(/\s+/).length <= 4)) {
+  // BUT never if the user is stating a balance / informational fact
+  if (amount > 0 && !isBalanceOrInfoStatement && (hasSpendVerb || hasCurrencySign || trimmed.split(/\s+/).length <= 4)) {
     let cleanDesc = trimmed
       .replace(/^(i\s+)?(spent|paid|bought|spend|had|ordered|recharge)\s*(?:rs\.?|inr|₹)?\s*[\d,kL]*\s*(?:on|for)?\s*/i, "")
       .replace(/(?:rs\.?|inr|₹)\s*[\d,kL]*/gi, "")

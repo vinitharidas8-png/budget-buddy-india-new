@@ -161,14 +161,13 @@ const GROQ_TOOLS = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are Budget Coach — an encouraging, non-judgmental, practical personal finance assistant for Indian users (students, freshers, professionals).
+const SYSTEM_PROMPT = `You are Budget Coach — an encouraging, actionable personal finance assistant for Indian users.
 
 CORE PRINCIPLES:
-1. Always use tools to fetch data or prepare an expense entry card.
-2. All financial numbers must come strictly from tool results — never hallucinate or invent balances.
-3. For expenses: call log_expense with the amount, description, and category.
-4. For received money, salary, stipend, cashback, or income: call log_income with the amount and description.
-5. Keep answers brief, clear, and friendly. Use ₹ symbol for Indian rupees.`;
+1. When asked for advice, planning, or how to afford a purchase (e.g. buying a bike, car, laptop, or savings goal): ALWAYS deliver a comprehensive, actionable response directly to the user with concrete numbers, monthly savings calculations, and practical steps. Do NOT just say "Let me check..." or leave the user hanging.
+2. For expenses: call log_expense with amount, description, and category.
+3. For received money, salary, or income: call log_income with amount and description.
+4. Keep answers clean, formatted, friendly, and structured. Always use the ₹ symbol for Indian rupees.`;
 
 function checkLevelUp(profile: any): boolean {
   let up = false;
@@ -336,8 +335,12 @@ async function chatWithGroq(message: string, history: any[], userId: string, api
 
     let reply = choice?.message?.content;
 
-    // If model didn't return text (only tool calls), perform follow-up turn to get full advisory explanation
-    if (!reply && !pending) {
+    // ALWAYS perform a follow-up synthesis turn when tool calls were made,
+    // unless this is a log_expense confirmation (pending card).
+    // The model often returns filler text like "Let me check..." alongside tool calls,
+    // which is NOT the final answer — we need the model to see the tool results
+    // and synthesize a comprehensive response.
+    if (!pending) {
       for (const followUpModel of GROQ_MODELS) {
         try {
           const followUp = await groq.chat.completions.create({
@@ -445,11 +448,48 @@ async function chatWithGemini(message: string, history: any[], userId: string, a
         ?.map((p: any) => p.text)
         .join("\n") || "";
 
-    const reply =
-      textParts ||
-      (pending
+    // For non-pending tool calls, perform a follow-up turn to get full synthesis
+    // (textParts may just be filler like "Let me check your goals...")
+    let reply = textParts;
+    if (!pending && functionCalls.length > 0) {
+      try {
+        // Build follow-up contents with tool results
+        const followUpContents = [...contents];
+        // Add the model's function call response
+        followUpContents.push({
+          role: "model",
+          parts: candidate?.content?.parts || [],
+        });
+        // Add tool results as function responses
+        for (const fc of functionCalls) {
+          const res = toolCalls.find((tc: any) => tc.tool === fc.name)?.result;
+          followUpContents.push({
+            role: "user",
+            parts: [{ functionResponse: { name: fc.name, response: res || {} } }],
+          });
+        }
+
+        const followUpResponse = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: followUpContents,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+          },
+        });
+        const followUpText = followUpResponse.text;
+        if (followUpText) {
+          reply = followUpText;
+        }
+      } catch (e: any) {
+        console.warn("Gemini follow-up synthesis failed:", e?.message || e);
+      }
+    }
+
+    if (!reply) {
+      reply = pending
         ? `Got it! I prepared the entry for <b>₹${pending.amount.toLocaleString("en-IN")}</b> (${pending.description}). Please confirm below:`
-        : `Processed your request successfully.`);
+        : `Processed your request successfully.`;
+    }
 
     return {
       reply,
