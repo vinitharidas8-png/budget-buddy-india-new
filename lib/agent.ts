@@ -300,6 +300,9 @@ async function chatWithGroq(message: string, history: any[], userId: string, api
   let levelUp = false;
 
   if (toolCallsFromLLM && toolCallsFromLLM.length > 0) {
+    // 1. Push the assistant's message containing tool_calls ONCE
+    messages.push(choice.message);
+
     for (const tc of toolCallsFromLLM) {
       if (tc.type === "function") {
         const name = tc.function.name;
@@ -321,8 +324,7 @@ async function chatWithGroq(message: string, history: any[], userId: string, api
           if (checkLevelUp(profile)) levelUp = true;
         }
 
-        // Push tool call and response into conversation so the model can generate a full explanation
-        messages.push(choice.message);
+        // 2. Push each individual tool result matching tc.id
         messages.push({
           role: "tool",
           tool_call_id: tc.id,
@@ -336,15 +338,20 @@ async function chatWithGroq(message: string, history: any[], userId: string, api
 
     // If model didn't return text (only tool calls), perform follow-up turn to get full advisory explanation
     if (!reply && !pending) {
-      try {
-        const followUp = await groq.chat.completions.create({
-          model: "openai/gpt-oss-120b",
-          messages,
-          temperature: 0.3,
-        });
-        reply = followUp.choices?.[0]?.message?.content;
-      } catch (e) {
-        console.warn("Follow-up completion failed:", e);
+      for (const followUpModel of GROQ_MODELS) {
+        try {
+          const followUp = await groq.chat.completions.create({
+            model: followUpModel,
+            messages,
+            temperature: 0.3,
+          });
+          if (followUp.choices?.[0]?.message?.content) {
+            reply = followUp.choices[0].message.content;
+            break;
+          }
+        } catch (e: any) {
+          console.warn(`Follow-up turn on ${followUpModel} failed:`, e?.message || e);
+        }
       }
     }
 
